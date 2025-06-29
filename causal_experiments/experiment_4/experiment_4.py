@@ -19,7 +19,6 @@ from pathlib import Path
 from io import StringIO
 import warnings
 warnings.filterwarnings('ignore')
-from typing import Optional
 
 from tabpfn_extensions import TabPFNClassifier, TabPFNRegressor, unsupervised
 from utils.scm_data import generate_scm_data, get_dag_and_config
@@ -127,7 +126,7 @@ def run_single_configuration(train_size, dag_level, repetition, config,
     # Create and train model
     clf = TabPFNClassifier(n_estimators=config['n_estimators'], device=device)
     reg = TabPFNRegressor(n_estimators=config['n_estimators'], device=device)
-    model = unsupervised.TabPFNUnsupervisedModel(tabpfn_clf=clf, tabpfen_reg=reg)
+    model = unsupervised.TabPFNUnsupervisedModel(tabpfn_clf=clf, tabpfn_reg=reg)
     
     if categorical_cols:
         model.set_categorical_features(categorical_cols)

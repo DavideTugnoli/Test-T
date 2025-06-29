@@ -12,23 +12,8 @@ import matplotlib.pyplot as plt
 import warnings
 import pandas as pd
 from scipy.stats import chi2_contingency, pearsonr
-import networkx as nx
-from castle.common import GraphDAG
-from castle.metrics import MetricsDAG
-from castle.plot import plot_dag
-from utils.dag_utils import (
-    are_dags_equal,
-    cpdag_to_dags,
-    dag_to_cpdag,
-    get_minimal_dag,
-    is_dag_in_cpdag,
-    node_names_to_dag,
-)
-from utils.scm_data import (
-    SCMGenerator,
-    generate_data_from_scm,
-    get_dag_and_config,
-)
+from utils.dag_utils import cpdag_to_dags, convert_cpdag_to_named_dags, convert_named_dag_to_indices
+from utils.scm_data import get_dag_and_config
 
 # For causal discovery
 from causallearn.search.ConstraintBased.PC import pc
@@ -40,8 +25,7 @@ from sklearn.preprocessing import KBinsDiscretizer
 
 # Add parent directory to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from utils.scm_data import generate_scm_data, get_dag_and_config
-from utils.dag_utils import convert_cpdag_to_named_dags, convert_named_dag_to_indices
+from utils.scm_data import generate_scm_data
 
 
 def get_pairwise_pvalues(data, col_names, categorical_cols, test_type='fisherz', alpha=0.05):
@@ -311,6 +295,65 @@ def run_causal_discovery_experiment(include_categorical, alpha=0.05, n_samples=1
     # Save visualization
     plot_graphs(true_dag, cg, col_names, output_filename)
     print(f"\nPlot saved: {output_filename}")
+
+
+def run_pc_discovery_on_dataset(dataset_name, data, true_dag, task_type="unsupervised", 
+                               target_column=None, verbose=False, output_dir=None):
+    """
+    Run PC algorithm on a dataset and return the discovered CPDAG.
+    
+    Args:
+        dataset_name: Name of the dataset ("mixed" or "continuous")
+        data: Data array for causal discovery
+        true_dag: True DAG structure (for validation/comparison)
+        task_type: Type of task (unused, kept for compatibility)
+        target_column: Target column name (unused, kept for compatibility)
+        verbose: Whether to print detailed output
+        output_dir: Output directory for plots (if None, no plots saved)
+        
+    Returns:
+        CPDAG adjacency matrix (numpy array)
+    """
+    include_categorical = dataset_name == "mixed"
+    _, col_names, categorical_cols = get_dag_and_config(include_categorical=include_categorical)
+    
+    if verbose:
+        print(f"Running PC discovery on {dataset_name} data...")
+        print(f"Data shape: {data.shape}")
+        print(f"Categorical columns: {categorical_cols}")
+    
+    # Run causal discovery
+    alpha = 0.05
+    if include_categorical and categorical_cols:
+        cg, method_used = run_mixed_data_discovery(data, col_names, categorical_cols, alpha)
+    else:
+        cg = discover_cpdag(data, alpha=alpha, indep_test='fisherz')
+        method_used = "Fisher-Z"
+    
+    if cg is None:
+        if verbose:
+            print("ERROR: All causal discovery methods failed!")
+        # Return empty CPDAG
+        return np.zeros((len(col_names), len(col_names)))
+    
+    if verbose:
+        print(f"Method used: {method_used}")
+        # Count discovered edges
+        discovered_edges = 0
+        for i in range(len(col_names)):
+            for j in range(len(col_names)):
+                if cg.G.graph[i, j] != 0:
+                    discovered_edges += 1
+        print(f"Discovered edges: {discovered_edges//2}")
+    
+    # Save plot if output directory is provided
+    if output_dir is not None:
+        plot_filename = f"{output_dir}/{dataset_name}_discovery_result.png"
+        plot_graphs(true_dag, cg, col_names, plot_filename)
+        if verbose:
+            print(f"Plot saved: {plot_filename}")
+    
+    return cg.G.graph
 
 
 def main():
