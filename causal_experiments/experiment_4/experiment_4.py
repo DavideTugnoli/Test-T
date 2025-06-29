@@ -19,85 +19,15 @@ from pathlib import Path
 from io import StringIO
 import warnings
 warnings.filterwarnings('ignore')
+from typing import Optional
+import fire
 
-# TabPFN imports
 from tabpfn_extensions import TabPFNClassifier, TabPFNRegressor, unsupervised
-
-# Local imports - add parent directory to path for utils
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from utils.scm_data import generate_scm_data, get_dag_and_config
+from utils.scm_data import SCMGenerator
 from utils.metrics import SyntheticDataEvaluator
-from utils.dag_utils import (
-    cpdag_to_dags, 
-    dag_belongs_to_cpdag, 
-    convert_named_dag_to_indices,
-    print_dag_info
-)
+from utils.dag_utils import cpdag_to_dags
 
 # No longer need causal discovery imports - using dummy CPDAG generation
-
-
-def create_cpdag_from_true_dag(true_dag, ambiguity_level=0.3, random_state=42):
-    """
-    Create a CPDAG from the true DAG by introducing controlled ambiguity.
-    
-    This creates a realistic CPDAG that contains the true DAG in its equivalence 
-    class, plus other plausible DAGs with different edge orientations.
-    
-    Args:
-        true_dag: True DAG structure {node: [parents]}
-        ambiguity_level: Fraction of edges to make undirected (0.0 to 1.0)
-        random_state: Random seed for reproducibility
-        
-    Returns:
-        CPDAG adjacency matrix (numpy array) in causallearn format
-    """
-    print(f"    Creating CPDAG from true DAG (ambiguity={ambiguity_level})...")
-    
-    rng = np.random.default_rng(random_state)
-    
-    # Get all nodes
-    all_nodes = set(true_dag.keys())
-    for parents in true_dag.values():
-        all_nodes.update(parents)
-    all_nodes = sorted(list(all_nodes))
-    n_nodes = len(all_nodes)
-    
-    # Initialize CPDAG matrix (all zeros)
-    cpdag = np.zeros((n_nodes, n_nodes), dtype=int)
-    
-    # Collect all edges from true DAG
-    edges = []
-    for child, parents in true_dag.items():
-        for parent in parents:
-            edges.append((parent, child))
-    
-    if not edges:
-        print("    No edges in true DAG - returning empty CPDAG")
-        return cpdag
-    
-    # Decide which edges to make ambiguous (undirected)
-    n_ambiguous = int(len(edges) * ambiguity_level)
-    ambiguous_edges = rng.choice(len(edges), size=n_ambiguous, replace=False)
-    
-    print(f"    Making {n_ambiguous}/{len(edges)} edges undirected for ambiguity")
-    
-    # Fill CPDAG matrix
-    for i, (parent, child) in enumerate(edges):
-        if i in ambiguous_edges:
-            # Make this edge undirected (both directions = -1)
-            cpdag[parent, child] = -1
-            cpdag[child, parent] = -1
-        else:
-            # Keep this edge directed (parent->child: parent=-1, child=1)
-            cpdag[parent, child] = -1
-            cpdag[child, parent] = 1
-    
-    print(f"    Created CPDAG with {np.sum(cpdag != 0) // 2} edges ({n_ambiguous} undirected)")
-    return cpdag
 
 
 def categorize_dags_by_complexity(dags):
@@ -183,7 +113,11 @@ def run_single_configuration(train_size, dag_level, repetition, config,
         torch.cuda.manual_seed_all(seed)
     
     # Generate training data
-    X_train = generate_scm_data(train_size, seed, config['include_categorical'])
+    scm_gen = SCMGenerator(
+        config_name="mixed" if config['include_categorical'] else "continuous",
+        seed=seed
+    )
+    X_train, _, _, _ = scm_gen.generate_data(n_samples=train_size)
     X_train_tensor = torch.from_numpy(X_train).float()
     
     # Get the DAG to use
@@ -194,7 +128,7 @@ def run_single_configuration(train_size, dag_level, repetition, config,
     # Create and train model
     clf = TabPFNClassifier(n_estimators=config['n_estimators'], device=device)
     reg = TabPFNRegressor(n_estimators=config['n_estimators'], device=device)
-    model = unsupervised.TabPFNUnsupervisedModel(tabpfn_clf=clf, tabpfn_reg=reg)
+    model = unsupervised.TabPFNUnsupervisedModel(tabpfn_clf=clf, tabpfen_reg=reg)
     
     if categorical_cols:
         model.set_categorical_features(categorical_cols)
@@ -237,245 +171,138 @@ def run_single_configuration(train_size, dag_level, repetition, config,
 
 
 def save_checkpoint(results_so_far, current_config_idx, output_dir):
-    """Save checkpoint for resuming."""
-    checkpoint = {
-        'results': results_so_far,
-        'current_config_idx': current_config_idx
-    }
-    
-    checkpoint_file = Path(output_dir) / "checkpoint.pkl"
-    with open(checkpoint_file, 'wb') as f:
-        pickle.dump(checkpoint, f)
+    checkpoint_path = Path(output_dir) / "experiment_4_checkpoint.pkl"
+    with open(checkpoint_path, 'wb') as f:
+        pickle.dump((results_so_far, current_config_idx), f)
 
 
 def load_checkpoint(output_dir):
-    """Load checkpoint if exists."""
-    checkpoint_file = Path(output_dir) / "checkpoint.pkl"
-    if checkpoint_file.exists():
-        with open(checkpoint_file, 'rb') as f:
+    checkpoint_path = Path(output_dir) / "experiment_4_checkpoint.pkl"
+    if checkpoint_path.exists():
+        with open(checkpoint_path, 'rb') as f:
             return pickle.load(f)
-    return None
+    return None, -1
 
 
-def run_experiment_4(config=None, output_dir="experiment_4_results", resume=True):
+def run_experiment_4(cpdag, config=None, output_dir="experiment_4_results", resume=True):
     """
-    Main experiment function for testing causal knowledge level impact.
+    Run Experiment 4: Test TabPFN with different DAGs from a given CPDAG.
+    
+    Args:
+        cpdag: CPDAG adjacency matrix from causal discovery.
+        config: Dictionary with experiment settings.
+        output_dir: Directory to save results.
+        resume: Whether to resume from a checkpoint.
     """
-    # Default config
+    # Create output directory
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+    # --- Step 1: Load config and setup ---
+    print("\n--- Step 1: Loading configuration ---")
+    
     if config is None:
+        # Provide a default config if none is given
         config = {
-            'train_sizes': [50, 100, 200, 500],
-            'n_repetitions': 10,
-            'test_size': 2000,
+            'train_sizes': [50, 100, 200],
+            'n_repetitions': 5,
+            'test_size': 1000,
             'n_permutations': 3,
             'metrics': ['max_corr_diff', 'propensity_mse', 'kmarginal'],
-            'include_categorical': False,
+            'include_categorical': True,
             'n_estimators': 3,
-            'random_seed_base': 42,
-            'cpdag_ambiguity_level': 0.3  # Fraction of edges to make undirected in CPDAG
+            'random_seed_base': 42
         }
     
-    # Create output directory
-    output_dir = Path(output_dir)
-    output_dir.mkdir(exist_ok=True)
+    print("Configuration:")
+    for key, value in config.items():
+        print(f"  {key}: {value}")
+        
+    # Check for resumption
+    checkpoint = load_checkpoint(output_dir) if resume else None
+    if resume and checkpoint[0] is not None:
+        results, last_completed_idx = checkpoint
+        print(f"Resuming from checkpoint. Last completed configuration index: {last_completed_idx}")
+    else:
+        results = []
+        last_completed_idx = -1
+
+    # --- CPDAG to DAGs ---
+    print("\n--- Step 2: Generating all DAGs from the discovered CPDAG ---")
     
-    print(f"Experiment 4 - Output dir: {output_dir}")
-    print(f"Config: {config}")
+    # The CPDAG is a numpy array, cpdag_to_dags will handle it
+    all_dags = cpdag_to_dags(cpdag)
     
-    # Setup: Get true DAG and generate test data
-    true_dag, col_names, categorical_cols = get_dag_and_config(config['include_categorical'])
-    X_test = generate_scm_data(config['test_size'], 123, config['include_categorical'])
+    if not all_dags:
+        print("No valid DAGs could be generated from the CPDAG. Exiting.")
+        final_df = pd.DataFrame(results)
+        final_df.to_csv(Path(output_dir) / "raw_results_final.csv", index=False)
+        if os.path.exists(Path(output_dir) / "experiment_4_checkpoint.pkl"):
+            os.remove(Path(output_dir) / "experiment_4_checkpoint.pkl")
+        return
+        
+    print(f"Generated {len(all_dags)} possible DAGs from the CPDAG.")
     
-    print("\nTrue DAG structure (for reference):")
-    print_dag_info(true_dag, col_names)
-    
-    # CPDAG Creation: Create CPDAG from true DAG with controlled ambiguity
-    print(f"\nStep 1: Create CPDAG from True DAG")
-    print("-" * 50)
-    
-    cpdag_matrix = create_cpdag_from_true_dag(
-        true_dag, 
-        config['cpdag_ambiguity_level'],
-        config['random_seed_base']
+    dag_categories = categorize_dags_by_complexity(all_dags)
+    print(f"DAGs categorized into {len(dag_categories)} levels: {list(dag_categories.keys())}")
+
+    # --- Step 3: Prepare shared test data ---
+    print("\n--- Step 3: Generating shared test data ---")
+    scm_gen = SCMGenerator(
+        config_name="mixed" if config['include_categorical'] else "continuous",
+        seed=config['random_seed_base'] - 1  # Use a different seed for test set
     )
+    X_test, _, categorical_cols, col_names = scm_gen.generate_data(n_samples=config['test_size'])
+    print(f"Generated test data of size {X_test.shape}")
+    if categorical_cols:
+        print(f"Categorical columns identified: {categorical_cols}")
+
+    # --- Step 4: Run experiment configurations ---
+    print("\n--- Step 4: Running experiment configurations ---")
     
-    print(f"    CPDAG shape: {cpdag_matrix.shape}")
-    print(f"    CPDAG edges: {np.sum(cpdag_matrix != 0) // 2}")
-    
-    # Generate all possible DAGs from CPDAG
-    print("\nStep 2: Generate DAGs from CPDAG")
-    print("-" * 50)
-    
-    try:
-        possible_dags = cpdag_to_dags(cpdag_matrix)
-        print(f"    Found {len(possible_dags)} possible DAGs")
-    except Exception as e:
-        print(f"    Failed to generate DAGs: {e}")
-        print("    Using only true DAG as fallback")
-        possible_dags = [true_dag]
-    
-    # Show discovered DAGs
-    for i, dag in enumerate(possible_dags[:5]):  # Show first 5
-        edge_count = sum(len(parents) for parents in dag.values())
-        print(f"    DAG {i+1}: {edge_count} edges")
-        if i < 3:  # Detailed info for first 3
-            print_dag_info(dag, col_names)
-    
-    if len(possible_dags) > 5:
-        print(f"    ... and {len(possible_dags) - 5} more DAGs")
-    
-    # Categorize DAGs by complexity
-    print("\nStep 3: Categorize DAGs by complexity")
-    print("-" * 50)
-    
-    dag_categories = categorize_dags_by_complexity(possible_dags)
-    
-    print("DAG categories created:")
-    for category, dag in dag_categories.items():
-        if dag is None:
-            print(f"  {category}: No DAG (vanilla TabPFN)")
-        else:
-            edge_count = sum(len(parents) for parents in dag.values())
-            print(f"  {category}: {edge_count} edges")
-    
-    # Check if true DAG belongs to created CPDAG (for validation)
-    if len(possible_dags) > 0:
-        belongs = dag_belongs_to_cpdag(true_dag, cpdag_matrix)
-        print(f"\nValidation: True DAG belongs to created CPDAG: {belongs}")
-    
-    # Load checkpoint if resuming
-    start_config_idx = 0
-    all_results = []
-    
-    if resume:
-        checkpoint = load_checkpoint(output_dir)
-        if checkpoint is not None:
-            all_results = checkpoint['results']
-            start_config_idx = checkpoint['current_config_idx']
-            print(f"\nResuming from configuration {start_config_idx}")
-            print(f"Already completed: {len(all_results)} results")
-    
-    # Generate all configurations
     configurations = []
-    dag_levels = list(dag_categories.keys())
-    
     for train_size in config['train_sizes']:
-        for dag_level in dag_levels:
+        for dag_level in dag_categories.keys():
             for rep in range(config['n_repetitions']):
-                configurations.append({
-                    'train_size': train_size,
-                    'dag_level': dag_level,
-                    'repetition': rep
-                })
-    
+                configurations.append((train_size, dag_level, rep))
+
     total_configs = len(configurations)
-    print(f"\nStep 4: Run Experiment")
-    print("-" * 50)
-    print(f"Total configurations: {total_configs}")
-    print(f"DAG levels: {dag_levels}")
-    print(f"Training sizes: {config['train_sizes']}")
-    print(f"Repetitions: {config['n_repetitions']}")
-    
-    # Run configurations
-    try:
-        for config_idx in range(start_config_idx, total_configs):
-            config_data = configurations[config_idx]
+    print(f"Total configurations to run: {total_configs}")
+
+    for i, (train_size, dag_level, repetition) in enumerate(configurations):
+        if i <= last_completed_idx:
+            continue
             
-            print(f"\nConfiguration {config_idx + 1}/{total_configs}:")
-            print(f"  Train size: {config_data['train_size']}")
-            
-            result = run_single_configuration(
-                config_data['train_size'],
-                config_data['dag_level'],
-                config_data['repetition'],
-                config,
-                X_test,
-                dag_categories,
-                col_names,
-                categorical_cols
-            )
-            
-            all_results.append(result)
-            
-            # Save checkpoint every 10 configurations
-            if (config_idx + 1) % 10 == 0:
-                save_checkpoint(all_results, config_idx + 1, output_dir)
-                print(f"    Checkpoint saved (completed {config_idx + 1}/{total_configs})")
-    
-    except KeyboardInterrupt:
-        print("\nExperiment interrupted by user")
-        save_checkpoint(all_results, config_idx, output_dir)
-        print(f"Progress saved. Completed {len(all_results)} configurations.")
-        return None
-    
-    # Save final results
-    print(f"\nExperiment completed! Total results: {len(all_results)}")
-    
-    # Convert to DataFrame and save
-    df_results = pd.DataFrame(all_results)
-    
-    # Save detailed results
-    results_file = output_dir / "raw_results_final.csv"
-    df_results.to_csv(results_file, index=False)
-    print(f"Results saved to: {results_file}")
-    
-    # Generate summary report
-    report_file = output_dir / "experiment_4_report.txt"
-    with open(report_file, 'w') as f:
-        f.write("EXPERIMENT 4: Causal Knowledge Level Impact\n")
-        f.write("=" * 50 + "\n\n")
+        print(f"\nRunning config {i+1}/{total_configs}: Train size={train_size}, DAG level='{dag_level}', Rep={repetition+1}")
         
-        f.write("Research Question:\n")
-        f.write("How does the level of causal knowledge (derived from CPDAG) affect TabPFN's performance?\n\n")
+        result = run_single_configuration(
+            train_size=train_size,
+            dag_level=dag_level,
+            repetition=repetition,
+            config=config,
+            X_test=X_test,
+            dag_categories=dag_categories,
+            col_names=col_names,
+            categorical_cols=categorical_cols
+        )
+        results.append(result)
         
-        f.write("Methodology:\n")
-        f.write("1. Create CPDAG from true DAG with controlled ambiguity\n")
-        f.write("2. Generate all possible DAGs from the CPDAG\n")
-        f.write("3. Categorize DAGs by complexity (number of edges)\n")
-        f.write("4. Test TabPFN with different levels of causal knowledge\n\n")
-        
-        f.write(f"CPDAG Ambiguity Level: {config['cpdag_ambiguity_level']}\n")
-        f.write(f"Generated DAGs: {len(possible_dags)}\n\n")
-        
-        f.write("DAG Categories:\n")
-        for category, dag in dag_categories.items():
-            if dag is None:
-                f.write(f"  {category}: No DAG (vanilla)\n")
-            else:
-                edge_count = sum(len(parents) for parents in dag.values())
-                f.write(f"  {category}: {edge_count} edges\n")
-        f.write("\n")
-        
-        f.write("Performance Summary:\n")
-        f.write("-" * 30 + "\n")
-        
-        for metric in config['metrics']:
-            f.write(f"\n{metric.upper()}:\n")
-            
-            # Mean performance by DAG level
-            mean_by_level = df_results.groupby('dag_level')[metric].mean()
-            sorted_levels = mean_by_level.sort_values()
-            
-            f.write("Performance ranking (best to worst):\n")
-            for i, (level, value) in enumerate(sorted_levels.items(), 1):
-                f.write(f"  {i}. {level}: {value:.4f}\n")
-            
-            # Performance vs vanilla
-            if 'no_dag' in mean_by_level:
-                vanilla_perf = mean_by_level['no_dag']
-                f.write(f"\nComparison to vanilla ({vanilla_perf:.4f}):\n")
-                
-                for level in dag_categories.keys():
-                    if level != 'no_dag':
-                        diff = mean_by_level[level] - vanilla_perf
-                        pct_change = (diff / vanilla_perf) * 100
-                        f.write(f"  {level}: {diff:+.4f} ({pct_change:+.1f}%)\n")
-    
-    print(f"Report saved to: {report_file}")
-    
-    # Clean up checkpoint
-    checkpoint_file = output_dir / "checkpoint.pkl"
-    if checkpoint_file.exists():
-        checkpoint_file.unlink()
-    
-    return df_results 
+        # Checkpoint after each result
+        save_checkpoint(results, i, output_dir)
+        print(f"  Saved checkpoint for config {i+1}")
+
+    # --- Step 5: Save final results ---
+    print("\n--- Step 5: Saving final results ---")
+    final_df = pd.DataFrame(results)
+    final_df.to_csv(Path(output_dir) / "raw_results_final.csv", index=False)
+    print(f"Final results saved to {Path(output_dir) / 'raw_results_final.csv'}")
+
+    # Clean up checkpoint file
+    checkpoint_path = Path(output_dir) / "experiment_4_checkpoint.pkl"
+    if checkpoint_path.exists():
+        os.remove(checkpoint_path)
+
+    print("\nExperiment 4 finished successfully!")
+
+
+if __name__ == '__main__':
+    fire.Fire(run_experiment_4) 

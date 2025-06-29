@@ -12,6 +12,23 @@ import matplotlib.pyplot as plt
 import warnings
 import pandas as pd
 from scipy.stats import chi2_contingency, pearsonr
+import networkx as nx
+from castle.common import GraphDAG
+from castle.metrics import MetricsDAG
+from castle.plot import plot_dag
+from utils.dag_utils import (
+    are_dags_equal,
+    cpdag_to_dags,
+    dag_to_cpdag,
+    get_minimal_dag,
+    is_dag_in_cpdag,
+    node_names_to_dag,
+)
+from utils.scm_data import (
+    SCMGenerator,
+    generate_data_from_scm,
+    get_dag_and_config,
+)
 
 # For causal discovery
 from causallearn.search.ConstraintBased.PC import pc
@@ -299,7 +316,7 @@ def run_causal_discovery_experiment(include_categorical, alpha=0.05, n_samples=1
 def main():
     """Main function."""
     # Continuous data experiment
-    run_causal_discovery_experiment(include_categorical=False, alpha=0.05, n_samples=1000)
+    run_causal_discovery_experiment(include_categorical=False, alpha=0.05, n_samples=100)
     
     # Mixed data experiment - try different alphas
     print("\n\nTrying different alpha values for mixed data:")

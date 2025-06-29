@@ -1,151 +1,118 @@
 """
 Script to run Experiment 4: Causal Knowledge Level Impact on TabPFN Performance.
 
-This experiment creates a CPDAG from the true DAG with controlled ambiguity,
-then tests TabPFN with different levels of causal knowledge.
+This experiment first runs causal discovery on a simulated dataset to obtain a
+CPDAG, then uses this CPDAG to test TabPFN's generative performance with
+varying levels of causal knowledge derived from the CPDAG's equivalence class.
 
-Usage:
-    python run_experiment_4.py                    # Run full experiment
-    python run_experiment_4.py --no-resume       # Start fresh
-    python run_experiment_4.py --quick           # Run quick test
+Usage examples:
+    # Run experiment with mixed (continuous + categorical) data for discovery
+    python run_experiment_4.py --dataset-name mixed
+
+    # Run experiment with only continuous data for discovery
+    python run_experiment_4.py --dataset-name continuous
+
+    # Start a fresh run, ignoring any previous checkpoints
+    python run_experiment_4.py --dataset-name mixed --no-resume
 """
 
 import argparse
 from experiment_4 import run_experiment_4
-from utils.scm_data import get_dag_and_config
-from utils.dag_utils import print_dag_info
+from run_pc_discovery import run_pc_discovery_on_dataset
+from utils.scm_data import SCMGenerator, get_dag_and_config
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Run Experiment 4: Causal Knowledge Level Impact')
+    parser = argparse.ArgumentParser(
+        description='Run Experiment 4: Causal Knowledge Level Impact',
+        formatter_class=argparse.RawTextHelpFormatter
+    )
     parser.add_argument('--no-resume', action='store_true',
-                       help='Start fresh (ignore checkpoint)')
+                       help='Start a fresh run (ignores any existing checkpoint).')
     parser.add_argument('--output', type=str, default=None,
-                       help='Output directory (auto-generated if not specified)')
-    parser.add_argument('--quick', action='store_true',
-                       help='Run quick test with reduced configurations')
-    
+                       help='Output directory (a default name will be generated if not specified).')
+    parser.add_argument('--dataset-name', type=str, default="mixed", choices=["mixed", "continuous"],
+                        help='Name of the SCM configuration to use for the causal discovery phase.\n'
+                             '"mixed": Generates data with both continuous and categorical features.\n'
+                             '"continuous": Generates data with only continuous features.')
+
     args = parser.parse_args()
     
     # Show experiment info
     print("=" * 60)
     print("EXPERIMENT 4: Causal Knowledge Level Impact")
+    print(f"Causal discovery dataset type: {args.dataset_name}")
     print("=" * 60)
     
-    # Configuration
-    if args.quick:
-        print("\n\nRunning QUICK experiment...")
-        config = {
-            'train_sizes': [50, 200],
-            'n_repetitions': 3,
-            'test_size': 1000,
-            'n_permutations': 2,
-            'metrics': ['max_corr_diff', 'propensity_mse', 'kmarginal'],
-            'include_categorical': False,
-            'n_estimators': 2,
-            'random_seed_base': 42,
-            'cpdag_ambiguity_level': 0.3
-        }
-        output_dir = args.output or "experiment_4_results_quick"
-    else:
-        print("\n\nRunning FULL experiment...")
-        config = {
-            'train_sizes': [50, 100, 200, 500],
-            'n_repetitions': 10,
-            'test_size': 2000,
-            'n_permutations': 3,
-            'metrics': ['max_corr_diff', 'propensity_mse', 'kmarginal'],
-            'include_categorical': False,
-            'n_estimators': 3,
-            'random_seed_base': 42,
-            'cpdag_ambiguity_level': 0.3
-        }
-        output_dir = args.output or "experiment_4_results"
+    # Configuration for the experiment
+    print("\n\nRunning experiment with full configuration...")
+    config = {
+        'train_sizes': [50, 100, 200, 500],
+        'n_repetitions': 10,
+        'test_size': 2000,
+        'n_permutations': 3,
+        'metrics': ['max_corr_diff', 'propensity_mse', 'kmarginal'],
+        'include_categorical': args.dataset_name == "mixed",
+        'n_estimators': 3,
+        'random_seed_base': 42,
+    }
     
-    # Calculate total configurations (will be determined after causal discovery)
+    output_dir = args.output or f"experiment_4_results_{args.dataset_name}"
+    
     print(f"\nExperiment Configuration:")
     print(f"  Training sizes: {config['train_sizes']}")
     print(f"  Repetitions: {config['n_repetitions']}")
-    print(f"  CPDAG ambiguity level: {config['cpdag_ambiguity_level']}")
-    print(f"  Resume: {not args.no_resume}")
-    print(f"  Output: {output_dir}")
-    print(f"  Quick mode: {args.quick}")
+    print(f"  Resume enabled: {not args.no_resume}")
+    print(f"  Output directory: {output_dir}")
+
+    # --- Causal Discovery Step ---
+    print("\n" + "-" * 50)
+    print("STEP 1: Causal Discovery")
+    print("-" * 50)
     
-    print("\nNote: Total configurations will be determined after CPDAG creation")
-    print("      based on the number of DAGs found in the CPDAG equivalence class.")
+    true_dag, col_names, categorical_cols = get_dag_and_config(
+        include_categorical=(args.dataset_name == "mixed")
+    )
     
-    # Run experiment
-    results = run_experiment_4(
+    scm_gen = SCMGenerator(
+        config_name=args.dataset_name, 
+        seed=config['random_seed_base']
+    )
+    
+    # Generate data for discovery
+    n_discovery_samples = 2000
+    print(f"Generating {n_discovery_samples} samples for PC discovery...")
+    X_discovery, _, _, _ = scm_gen.generate_data(n_samples=n_discovery_samples)
+    
+    print("Discovering CPDAG from data using PC algorithm...")
+    cpdag = run_pc_discovery_on_dataset(
+        dataset_name=args.dataset_name,
+        data=X_discovery,
+        true_dag=true_dag,
+        task_type="classification" if "target" in col_names else "unsupervised",
+        target_column="target" if "target" in col_names else None,
+        verbose=False,
+        output_dir=None,
+    )
+    # The CPDAG from run_pc_discovery is a numpy array
+    print(f"CPDAG discovered successfully.")
+    
+    # --- Experiment Execution Step ---
+    print("\n" + "-" * 50)
+    print("STEP 2: Running Experiment 4 with Discovered CPDAG")
+    print("-" * 50)
+
+    run_experiment_4(
+        cpdag=cpdag,
         config=config,
         output_dir=output_dir,
         resume=not args.no_resume
     )
-    
-    # Print detailed summary
-    if results is not None and len(results) > 0:
-        print("\n" + "=" * 60)
-        print("EXPERIMENT SUMMARY")
-        print("=" * 60)
-        
-        # Show DAG levels discovered
-        dag_levels = results['dag_level'].unique()
-        print(f"\nDAG Levels Tested: {list(dag_levels)}")
-        
-        # Overall comparison
-        for metric in config['metrics']:
-            print(f"\n{metric.upper()} Results:")
-            print("-" * 40)
-            
-            # Mean by DAG level
-            mean_by_level = results.groupby('dag_level')[metric].mean()
-            
-            # Sort by performance (lower is better)
-            sorted_levels = mean_by_level.sort_values()
-            
-            print("Performance ranking (best to worst):")
-            for i, (level, value) in enumerate(sorted_levels.items(), 1):
-                print(f"  {i}. {level}: {value:.4f}")
-            
-            # Compare to vanilla (no_dag)
-            if 'no_dag' in mean_by_level:
-                vanilla_value = mean_by_level['no_dag']
-                print(f"\nComparison to vanilla TabPFN ({vanilla_value:.4f}):")
-                
-                for level in dag_levels:
-                    if level != 'no_dag':
-                        diff = mean_by_level[level] - vanilla_value
-                        pct_change = (diff / vanilla_value) * 100
-                        direction = "better" if diff < 0 else "worse"
-                        print(f"  {level}: {diff:+.4f} ({pct_change:+.1f}% {direction})")
-            
-            # Performance by training size
-            print(f"\nPerformance by training size:")
-            for train_size in sorted(config['train_sizes']):
-                subset = results[results['train_size'] == train_size]
-                mean_by_level_size = subset.groupby('dag_level')[metric].mean()
-                
-                print(f"  Training size {train_size}:")
-                for level in dag_levels:
-                    if level in mean_by_level_size:
-                        print(f"    {level}: {mean_by_level_size[level]:.4f}")
-        
-        # DAG complexity analysis
-        print(f"\nDAG Complexity Analysis:")
-        print("-" * 40)
-        
-        # Show edge counts for each level
-        dag_edge_info = results.groupby('dag_level')['dag_edges'].first()
-        print("DAG edge counts by level:")
-        
-        for level in sorted(dag_edge_info.index, key=lambda x: dag_edge_info[x]):
-            edge_count = dag_edge_info[level]
-            print(f"  {level}: {edge_count} edges")
-        
-        # Correlation between edges and performance
-        print(f"\nCorrelation between DAG edges and performance:")
-        for metric in config['metrics']:
-            correlation = results['dag_edges'].corr(results[metric])
-            print(f"  {metric}: {correlation:.3f}")
+
+    print("\n" + "=" * 50)
+    print("All experiments finished.")
+    print(f"Results saved in: {output_dir}")
+    print("=" * 50)
 
 
 if __name__ == "__main__":
