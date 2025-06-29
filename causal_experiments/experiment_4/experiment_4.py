@@ -20,7 +20,6 @@ from io import StringIO
 import warnings
 warnings.filterwarnings('ignore')
 from typing import Optional
-import fire
 
 from tabpfn_extensions import TabPFNClassifier, TabPFNRegressor, unsupervised
 from utils.scm_data import SCMGenerator
@@ -301,8 +300,4 @@ def run_experiment_4(cpdag, config=None, output_dir="experiment_4_results", resu
     if checkpoint_path.exists():
         os.remove(checkpoint_path)
 
-    print("\nExperiment 4 finished successfully!")
-
-
-if __name__ == '__main__':
-    fire.Fire(run_experiment_4) 
+    print("\nExperiment 4 finished successfully!") 
