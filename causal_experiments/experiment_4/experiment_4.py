@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 from typing import Optional
 
 from tabpfn_extensions import TabPFNClassifier, TabPFNRegressor, unsupervised
-from utils.scm_data import SCMGenerator
+from utils.scm_data import generate_scm_data, get_dag_and_config
 from utils.metrics import SyntheticDataEvaluator
 from utils.dag_utils import cpdag_to_dags
 
@@ -112,11 +112,11 @@ def run_single_configuration(train_size, dag_level, repetition, config,
         torch.cuda.manual_seed_all(seed)
     
     # Generate training data
-    scm_gen = SCMGenerator(
-        config_name="mixed" if config['include_categorical'] else "continuous",
-        seed=seed
+    X_train = generate_scm_data(
+        n_samples=train_size,
+        random_state=seed,
+        include_categorical=config['include_categorical']
     )
-    X_train, _, _, _ = scm_gen.generate_data(n_samples=train_size)
     X_train_tensor = torch.from_numpy(X_train).float()
     
     # Get the DAG to use
@@ -246,11 +246,14 @@ def run_experiment_4(cpdag, config=None, output_dir="experiment_4_results", resu
 
     # --- Step 3: Prepare shared test data ---
     print("\n--- Step 3: Generating shared test data ---")
-    scm_gen = SCMGenerator(
-        config_name="mixed" if config['include_categorical'] else "continuous",
-        seed=config['random_seed_base'] - 1  # Use a different seed for test set
+    X_test = generate_scm_data(
+        n_samples=config['test_size'],
+        random_state=config['random_seed_base'] - 1,  # Use a different seed for test set
+        include_categorical=config['include_categorical']
     )
-    X_test, _, categorical_cols, col_names = scm_gen.generate_data(n_samples=config['test_size'])
+    _, col_names, categorical_cols = get_dag_and_config(
+        include_categorical=config['include_categorical']
+    )
     print(f"Generated test data of size {X_test.shape}")
     if categorical_cols:
         print(f"Categorical columns identified: {categorical_cols}")

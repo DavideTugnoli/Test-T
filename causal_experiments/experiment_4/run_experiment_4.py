@@ -19,7 +19,7 @@ Usage examples:
 import argparse
 from experiment_4 import run_experiment_4
 from run_pc_discovery import run_pc_discovery_on_dataset
-from utils.scm_data import SCMGenerator, get_dag_and_config
+from utils.scm_data import generate_scm_data, get_dag_and_config
 
 
 def main():
@@ -74,15 +74,14 @@ def main():
         include_categorical=(args.dataset_name == "mixed")
     )
     
-    scm_gen = SCMGenerator(
-        config_name=args.dataset_name, 
-        seed=config['random_seed_base']
-    )
-    
     # Generate data for discovery
     n_discovery_samples = 2000
     print(f"Generating {n_discovery_samples} samples for PC discovery...")
-    X_discovery, _, _, _ = scm_gen.generate_data(n_samples=n_discovery_samples)
+    X_discovery = generate_scm_data(
+        n_samples=n_discovery_samples,
+        random_state=config['random_seed_base'],
+        include_categorical=(args.dataset_name == "mixed")
+    )
     
     print("Discovering CPDAG from data using PC algorithm...")
     cpdag = run_pc_discovery_on_dataset(
