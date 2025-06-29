@@ -55,6 +55,7 @@ def main():
         'include_categorical': args.dataset_name == "mixed",
         'n_estimators': 3,
         'random_seed_base': 42,
+        'max_dags_to_test': 5
     }
     
     output_dir = args.output or f"experiment_4_results_{args.dataset_name}"

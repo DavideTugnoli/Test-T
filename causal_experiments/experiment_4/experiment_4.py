@@ -28,12 +28,13 @@ from utils.dag_utils import cpdag_to_dags
 # No longer need causal discovery imports - using dummy CPDAG generation
 
 
-def categorize_dags_by_complexity(dags):
+def categorize_dags_by_complexity(dags, max_dags_to_test=5):
     """
-    Categorize DAGs by their complexity (number of edges).
+    Categorize DAGs by their complexity (number of edges) and select a subset for testing.
     
     Args:
         dags: List of DAG dictionaries
+        max_dags_to_test: Maximum number of DAGs to test (including no_dag)
         
     Returns:
         Dictionary with categories: {category_name: dag}
@@ -51,23 +52,32 @@ def categorize_dags_by_complexity(dags):
     edge_counts.sort(key=lambda x: x[0])
     
     # Create categories
-    n_dags = len(edge_counts)
     categories = {'no_dag': None}  # Always include vanilla case
     
-    if n_dags == 1:
-        categories['discovered_dag'] = edge_counts[0][1]
-    elif n_dags == 2:
-        categories['minimal_dag'] = edge_counts[0][1]
-        categories['full_dag'] = edge_counts[1][1]
-    elif n_dags >= 3:
-        categories['minimal_dag'] = edge_counts[0][1]
-        categories['medium_dag'] = edge_counts[n_dags // 2][1]
-        categories['full_dag'] = edge_counts[-1][1]
+    n_dags = len(edge_counts)
+    if n_dags == 0:
+        return categories
+    
+    # If we have few DAGs, include all
+    if n_dags <= max_dags_to_test - 1:  # -1 for no_dag
+        for i, (edge_count, dag) in enumerate(edge_counts):
+            categories[f'dag_{i+1}_{edge_count}_edges'] = dag
+    else:
+        # Sample DAGs across the complexity spectrum
+        # Always include the simplest and most complex
+        categories[f'dag_min_{edge_counts[0][0]}_edges'] = edge_counts[0][1]
+        categories[f'dag_max_{edge_counts[-1][0]}_edges'] = edge_counts[-1][1]
         
-        # If we have many DAGs, add more categories
-        if n_dags >= 5:
-            categories['quarter_dag'] = edge_counts[n_dags // 4][1]
-            categories['threequarter_dag'] = edge_counts[3 * n_dags // 4][1]
+        # Add intermediate DAGs if we have space
+        remaining_slots = max_dags_to_test - 3  # no_dag, min, max
+        if remaining_slots > 0 and n_dags > 2:
+            # Sample from the middle
+            step = max(1, n_dags // (remaining_slots + 1))
+            for i in range(1, min(remaining_slots + 1, n_dags - 1)):
+                idx = i * step
+                if idx < n_dags - 1:  # Don't include the last one (already included as max)
+                    edge_count, dag = edge_counts[idx]
+                    categories[f'dag_mid_{i}_{edge_count}_edges'] = dag
     
     return categories
 
@@ -142,8 +152,8 @@ def run_single_configuration(train_size, dag_level, repetition, config,
     )
     
     # Evaluate synthetic data
-    evaluator = SyntheticDataEvaluator(X_test, categorical_cols)
-    metrics = evaluator.evaluate(X_synthetic, plot=False)  # Disable plotting
+    evaluator = SyntheticDataEvaluator(config['metrics'])
+    metrics = evaluator.evaluate(X_test, X_synthetic, col_names, categorical_cols)
     
     # Prepare result dictionary
     result = {
@@ -208,7 +218,8 @@ def run_experiment_4(cpdag, config=None, output_dir="experiment_4_results", resu
             'metrics': ['max_corr_diff', 'propensity_mse', 'kmarginal'],
             'include_categorical': True,
             'n_estimators': 3,
-            'random_seed_base': 42
+            'random_seed_base': 42,
+            'max_dags_to_test': 5
         }
     
     print("Configuration:")
@@ -240,7 +251,7 @@ def run_experiment_4(cpdag, config=None, output_dir="experiment_4_results", resu
         
     print(f"Generated {len(all_dags)} possible DAGs from the CPDAG.")
     
-    dag_categories = categorize_dags_by_complexity(all_dags)
+    dag_categories = categorize_dags_by_complexity(all_dags, config.get('max_dags_to_test', 5))
     print(f"DAGs categorized into {len(dag_categories)} levels: {list(dag_categories.keys())}")
 
     # --- Step 3: Prepare shared test data ---
