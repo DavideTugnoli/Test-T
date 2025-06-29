@@ -33,13 +33,15 @@ def main():
                        help='Output directory (a default name will be generated if not specified).')
     parser.add_argument('--include-categorical', action='store_true',
                         help='Include categorical variables in the SCM (default: only continuous variables).')
+    parser.add_argument('--sample-dags', action='store_true',
+                        help='Sample DAGs by complexity (default: test all possible DAGs).')
 
     args = parser.parse_args()
     
     # Show experiment info
-    print("=" * 60)
-    print("EXPERIMENT 4: Causal Knowledge Level Impact")
+    print("Starting Experiment 4: Causal Knowledge Level Impact")
     print(f"Data type: {'Mixed (continuous + categorical)' if args.include_categorical else 'Continuous only'}")
+    print(f"DAG sampling: {'Enabled (max 5 DAGs)' if args.sample_dags else 'Disabled (all DAGs)'}")
     print("=" * 60)
     
     # Configuration for the experiment
@@ -53,7 +55,7 @@ def main():
         'include_categorical': args.include_categorical,
         'n_estimators': 3,
         'random_seed_base': 42,
-        'max_dags_to_test': 5
+        'max_dags_to_test': 5 if args.sample_dags else None
     }
     
     output_dir = args.output or f"experiment_4_results_{'mixed' if args.include_categorical else 'continuous'}"

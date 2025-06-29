@@ -34,7 +34,8 @@ def categorize_dags_by_complexity(dags, max_dags_to_test=5):
     
     Args:
         dags: List of DAG dictionaries
-        max_dags_to_test: Maximum number of DAGs to test (including no_dag)
+        max_dags_to_test: Maximum number of DAGs to test (including no_dag).
+                         If None, test all DAGs.
         
     Returns:
         Dictionary with categories: {category_name: dag}
@@ -56,6 +57,12 @@ def categorize_dags_by_complexity(dags, max_dags_to_test=5):
     
     n_dags = len(edge_counts)
     if n_dags == 0:
+        return categories
+    
+    # If max_dags_to_test is None, include all DAGs
+    if max_dags_to_test is None:
+        for i, (edge_count, dag) in enumerate(edge_counts):
+            categories[f'dag_{i+1}_{edge_count}_edges'] = dag
         return categories
     
     # If we have few DAGs, include all
@@ -258,7 +265,7 @@ def run_experiment_4(cpdag, config=None, output_dir="experiment_4_results", resu
     print("\n--- Step 3: Generating shared test data ---")
     X_test = generate_scm_data(
         n_samples=config['test_size'],
-        random_state=config['random_seed_base'] - 1,  # Use a different seed for test set
+        random_state=123,  # config['random_seed_base'] - 1 Use a different seed for test set
         include_categorical=config['include_categorical']
     )
     _, col_names, categorical_cols = get_dag_and_config(
@@ -307,6 +314,30 @@ def run_experiment_4(cpdag, config=None, output_dir="experiment_4_results", resu
     final_df = pd.DataFrame(results)
     final_df.to_csv(Path(output_dir) / "raw_results_final.csv", index=False)
     print(f"Final results saved to {Path(output_dir) / 'raw_results_final.csv'}")
+
+    # --- EXTRA: Test the true DAG as reference ---
+    print("\n--- EXTRA: Testing the TRUE DAG as reference ---")
+    true_dag, col_names, categorical_cols = get_dag_and_config(
+        include_categorical=config['include_categorical']
+    )
+    for train_size in config['train_sizes']:
+        for rep in range(config['n_repetitions']):
+            print(f"  [TRUE_DAG] Train size={train_size}, Rep={rep+1}/{config['n_repetitions']}")
+            result = run_single_configuration(
+                train_size=train_size,
+                dag_level='true_dag',
+                repetition=rep,
+                config=config,
+                X_test=X_test,
+                dag_categories={'true_dag': true_dag},
+                col_names=col_names,
+                categorical_cols=categorical_cols
+            )
+            results.append(result)
+    # Save again including true DAG results
+    final_df = pd.DataFrame(results)
+    final_df.to_csv(Path(output_dir) / "raw_results_final.csv", index=False)
+    print(f"Final results (with true DAG) saved to {Path(output_dir) / 'raw_results_final.csv'}")
 
     # Clean up checkpoint file
     checkpoint_path = Path(output_dir) / "experiment_4_checkpoint.pkl"

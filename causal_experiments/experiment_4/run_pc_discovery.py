@@ -12,8 +12,14 @@ import matplotlib.pyplot as plt
 import warnings
 import pandas as pd
 from scipy.stats import chi2_contingency, pearsonr
+
+# Add the causal_experiments directory to the path for absolute imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+causal_experiments_dir = os.path.dirname(current_dir)
+sys.path.insert(0, causal_experiments_dir)
+
 from utils.dag_utils import cpdag_to_dags, convert_cpdag_to_named_dags, convert_named_dag_to_indices
-from utils.scm_data import get_dag_and_config
+from utils.scm_data import get_dag_and_config, generate_scm_data
 
 # For causal discovery
 from causallearn.search.ConstraintBased.PC import pc
@@ -22,10 +28,6 @@ from causallearn.utils.cit import CIT
 
 # For data preparation
 from sklearn.preprocessing import KBinsDiscretizer
-
-# Add parent directory to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from utils.scm_data import generate_scm_data
 
 
 def get_pairwise_pvalues(data, col_names, categorical_cols, test_type='fisherz', alpha=0.05):
@@ -365,7 +367,7 @@ def main():
     print("\n\nTrying different alpha values for mixed data:")
     for alpha in [0.01, 0.05, 0.10]:
         print(f"\n--- Alpha = {alpha} ---")
-        run_causal_discovery_experiment(include_categorical=True, alpha=alpha, n_samples=1300)
+        run_causal_discovery_experiment(include_categorical=True, alpha=alpha, n_samples=2000)
 
 
 if __name__ == "__main__":
